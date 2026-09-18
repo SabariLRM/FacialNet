@@ -1,0 +1,43 @@
+name: AI Model CI Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. Check out the code
+    - uses: actions/checkout@v3
+
+    # 2. Set up Python
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.9"
+
+    # 3. Install dependencies
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    # 4. Convert Notebooks to Scripts for Checking
+    # This ensures your notebook code is actually valid Python
+    - name: Convert Notebooks to Python Scripts
+      run: |
+        jupyter nbconvert --to script resnet_model.ipynb
+        jupyter nbconvert --to script densenet_model.ipynb
+
+    # 5. Lint with Flake8 (Syntax Checking)
+    # We ignore some errors (E501 line length) common in notebooks
+    - name: Lint with Flake8
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # exit-zero treats all errors as warnings.
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
