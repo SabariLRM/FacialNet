@@ -1,0 +1,4 @@
+/data
+*pth
+.venv/
+.DS_Store

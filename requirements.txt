@@ -1,0 +1,11 @@
+torch
+torchvision
+numpy
+pandas
+jupyter
+nbconvert
+flake8
+matplotlib
+pillow
+opencv-python<5  # 5.x dropped cv2.CascadeClassifier used for face detection
+kagglehub
