@@ -27,6 +27,7 @@ The project compares three ImageNet-pretrained CNN backbones, **ResNet-18**, **D
 
 - **Three backbones, one recipe:** ResNet-18, DenseNet-121 and EfficientNet-B0 trained with the same data pipeline and hyperparameters, so results compare directly.
 - **Real-time video emotion tracking:** OpenCV face detection, per-face emotion classification with softmax confidence, temporal smoothing and an FPS counter.
+- **Augmentation for real-world faces:** random zoom, flips, rotation, brightness and contrast changes and random occlusion keep clean RAF-DB accuracy the same, but make the models 2–9 points more accurate on dark, low-contrast, partly covered or tightly cropped faces.
 - **Noise robustness with DnCNN:** Gaussian noise cuts average RAF-DB accuracy from 87.2% to 34.8% (σ = 50); a DnCNN denoiser fine-tuned on faces restores it to 78.4%, and can clean every face in the live video pipeline.
 - **Static image prediction:** single-image scripts for the FER2013 models.
 - **Runs anywhere PyTorch does:** the RAF-DB notebooks pick NVIDIA CUDA, Apple Silicon (`mps`) or CPU automatically, and work unchanged on Kaggle or locally.
@@ -36,27 +37,27 @@ The project compares three ImageNet-pretrained CNN backbones, **ResNet-18**, **D
 
 ### RAF-DB (color, 7 classes, 3,068 test images)
 
-Trained for 12 epochs on an Apple M4 MacBook Air using the `mps` backend. Training times are wall-clock times and include thermal throttling on the fanless laptop.
+Trained for 12 epochs on an Apple M4 MacBook Air using the `mps` backend, with the augmentation described in [Preprocessing and augmentation](#preprocessing-and-augmentation). Time per epoch is the wall-clock time of one uninterrupted training and test pass.
 
-| Model | Parameters | Weights file | Training time | Test accuracy |
+| Model | Parameters | Weights file | Time per epoch | Test accuracy |
 | --- | --- | --- | --- | --- |
-| ResNet-18 | 11.2M | 45 MB | 37 min | 86.90% |
-| DenseNet-121 | 7.0M | 28 MB | 81 min | **87.48%** |
-| EfficientNet-B0 | 4.0M | 16 MB | 44 min | 87.42% |
+| ResNet-18 | 11.2M | 45 MB | 2.0 min | 87.03% |
+| DenseNet-121 | 7.0M | 28 MB | 5.2 min | **87.45%** |
+| EfficientNet-B0 | 4.0M | 16 MB | 3.8 min | 87.06% |
 
-DenseNet-121 and EfficientNet-B0 are effectively tied (the gap is two test images). EfficientNet-B0 gets there with about a third of ResNet-18's parameters.
+The three models are within 0.5 points of each other, which is within run-to-run noise (see [Effect of data augmentation](#effect-of-data-augmentation-raf-db)). EfficientNet-B0 gets there with about a third of ResNet-18's parameters.
 
 Per-class test accuracy:
 
 | Emotion (test images) | ResNet-18 | DenseNet-121 | EfficientNet-B0 |
 | --- | --- | --- | --- |
-| Surprise (329) | 85.4% | 83.0% | **86.6%** |
-| Fear (74) | 56.8% | 56.8% | **60.8%** |
-| Disgust (160) | 59.4% | 63.8% | **65.0%** |
-| Happy (1,185) | **94.6%** | 94.5% | 92.7% |
-| Sad (478) | 86.4% | 86.2% | **87.4%** |
-| Anger (162) | 80.9% | **82.7%** | 82.1% |
-| Neutral (680) | 85.7% | **88.4%** | 87.9% |
+| Surprise (329) | **89.4%** | 88.4% | 87.2% |
+| Fear (74) | **63.5%** | 54.1% | 58.1% |
+| Disgust (160) | 58.8% | 54.4% | **62.5%** |
+| Happy (1,185) | **94.1%** | 93.9% | 93.0% |
+| Sad (478) | 85.8% | 87.9% | **90.6%** |
+| Anger (162) | 82.7% | **85.8%** | 78.4% |
+| Neutral (680) | 84.7% | **87.2%** | 85.1% |
 
 Fear and Disgust are the hardest classes for every model. They are also the least represented in the training set (see [Datasets](#datasets)).
 
@@ -72,6 +73,32 @@ Trained for 15 epochs on Kaggle (NVIDIA Tesla T4) with mixed precision.
 FER2013 is considerably harder than RAF-DB: its images are 48×48 grayscale with noisier labels.
 
 All numbers above are the test accuracy after the final epoch, as printed in the notebooks.
+
+### Effect of data augmentation (RAF-DB)
+
+The first version of the RAF-DB models was trained with only a horizontal flip and ±15° rotation. The current models add random zoom, brightness and contrast changes and random occlusion (see [Preprocessing and augmentation](#preprocessing-and-augmentation)); everything else in the recipe is unchanged. Both versions were evaluated on the same test images, so each comparison is paired: the confidence interval is a bootstrap over test images, and the p-value is an exact McNemar test on the images that only one version classifies correctly.
+
+On the clean test set, the extra augmentation makes no significant difference:
+
+| Model | Flip + rotation | Full augmentation | Difference (95% CI) | McNemar p |
+| --- | --- | --- | --- | --- |
+| ResNet-18 | 86.90% | 87.03% | +0.13 (−0.91 to +1.17) | 0.85 |
+| DenseNet-121 | 87.48% | 87.45% | −0.03 (−1.04 to +0.98) | 1.00 |
+| EfficientNet-B0 | 87.42% | 87.06% | −0.36 (−1.37 to +0.62) | 0.52 |
+
+The two versions of each model disagree on 240–265 of the 3,068 test images, even though their accuracies are almost equal. Differences of about 1 point between single training runs, including between the three backbones, are therefore within run-to-run noise.
+
+The extra augmentation does reduce overfitting: final training accuracy falls from 98.2–98.8% to 92.8–96.0%. It also makes every model clearly more robust when the test faces are changed at test time:
+
+| Test condition | ResNet-18 | DenseNet-121 | EfficientNet-B0 |
+| --- | --- | --- | --- |
+| Clean | 86.9% → 87.0% | 87.5% → 87.5% | 87.4% → 87.1% |
+| Dark (brightness × 0.5) | 85.3% → 86.9% | 85.1% → 87.0% | 85.2% → 87.1% |
+| Low contrast (contrast × 0.5) | 84.7% → 86.7% | 85.1% → 87.2% | 85.3% → 87.2% |
+| Occluded (random box covering 5–15% of the face) | 80.5% → 84.2% | 80.0% → 85.0% | 82.8% → 85.4% |
+| Tight crop (central 80% of the face) | 73.9% → 83.4% | 79.3% → 84.8% | 82.7% → 85.2% |
+
+Every change in the four harder conditions is significant (McNemar p < 0.005). Without the extra augmentation the models lose up to 13 points under these conditions; with it they lose at most 4. The halved brightness and contrast and the 80% crop are stronger than anything seen in training, and all four conditions are common in webcam frames: poor lighting, hands or hair over the face, and detector boxes that crop differently from RAF-DB's alignment.
 
 ### Noise robustness with DnCNN (RAF-DB)
 
@@ -96,7 +123,7 @@ Emotion accuracy on noisy faces, before and after the fine-tuned DnCNN:
 - Noise hurts every model, and EfficientNet-B0 most of all: it falls to 18.84% at σ = 25.
 - Denoising first brings all three models back to within 1.5 points of clean accuracy at σ = 15, within 3 points at σ = 25, and to about 78% at σ = 50.
 - Fine-tuning DnCNN on faces adds 0.4 dB PSNR at σ = 25 and 1.2 dB at σ = 50 over the authors' pretrained model.
-- The clean column here resizes images on the GPU, so it differs from the table above (PIL resize) by up to 0.2 points.
+- These numbers were measured with the first version of the RAF-DB models (flip and rotation only; see [Effect of data augmentation](#effect-of-data-augmentation-raf-db)). The clean column resizes images on the GPU, so it differs from those models' PIL-resize accuracy by up to 0.2 points.
 
 ![Clean, noisy and denoised RAF-DB faces with EfficientNet-B0 predictions](Denoising/denoising_examples.png)
 
@@ -133,8 +160,18 @@ All models take 224×224, 3-channel input normalized with ImageNet mean and stan
 | --- | --- | --- |
 | Resize | 224×224 | 224×224 |
 | Color | Grayscale copied to 3 channels | Native RGB |
-| Train augmentation | Horizontal flip, rotation ±10° (DenseNet-121 also translates up to 10%) | Horizontal flip, rotation ±15° |
+| Train augmentation | Horizontal flip, rotation ±10° (DenseNet-121 also translates up to 10%) | See below |
 | Normalization | ImageNet mean/std | ImageNet mean/std |
+
+The RAF-DB training images are augmented on the fly, so every epoch sees a different version of each face. Test images are only resized and normalized.
+
+| RAF-DB augmentation | Setting | Simulates |
+| --- | --- | --- |
+| Random zoom (`RandomResizedCrop`) | Crop 85–100% of the area, aspect ratio 0.9–1.1, resize to 224×224 | Face detector boxes of different sizes |
+| Horizontal flip | 50% of images | Left and right sides of the face |
+| Rotation | Up to ±15° | Head tilt |
+| Brightness and contrast (`ColorJitter`) | ±30% each | Lighting and camera exposure |
+| Random erasing | 25% of images, a box covering 2–33% of the image | Hands, hair or glasses covering part of the face |
 
 ### Models
 
@@ -157,6 +194,7 @@ The whole network is fine-tuned; no layers are frozen.
 | Loss | Cross-entropy, label smoothing 0.1 | Cross-entropy |
 | Batch size | 64 | 64 |
 | Epochs | 12 | 15 |
+| Random seed | 42 (`torch.manual_seed`) | Not set |
 | Mixed precision | On CUDA only (float32 on `mps`/CPU) | CUDA AMP |
 
 The scheduler only steps when the mixed-precision grad scaler actually applied an optimizer step, which keeps OneCycleLR in sync when AMP skips a step.
@@ -366,7 +404,7 @@ CI checks that the code is valid Python; it does not train or evaluate models.
 - **Class imbalance:** RAF-DB has 17× more Happy than Fear training images, and Fear and Disgust are the weakest classes for every model. Class-weighted loss or oversampling would likely help.
 - **No separate validation split:** the test set is evaluated after every epoch. Reported numbers are final-epoch results, not the best epoch, but there is no held-out validation set.
 - **Face detection:** the Haar cascade only finds roughly frontal faces and is sensitive to lighting, head pose and occlusion. When it misses a face, no emotion is shown.
-- **Crop mismatch:** RAF-DB faces are tightly aligned, while webcam crops come from a detector box. More padding adds background and lowers accuracy.
+- **Crop mismatch:** RAF-DB faces are tightly aligned, while webcam crops come from a detector box. More padding adds background and lowers accuracy. Random zoom during training reduces the effect of tighter crops (see [Effect of data augmentation](#effect-of-data-augmentation-raf-db)), but looser crops with extra background were not tested.
 - **Synthetic noise only:** the denoiser is trained and evaluated on additive Gaussian noise. Real camera noise also includes compression artifacts, blur and signal-dependent noise, which were not tested.
 - **Confidence display:** the label shown in the video scripts is smoothed over 10 frames, but the percentage next to it is the current frame's confidence.
 
