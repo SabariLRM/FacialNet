@@ -11,17 +11,43 @@ The project compares three ImageNet-pretrained CNN backbones, **ResNet-18**, **D
 
 ## Contents
 
+- [Quick Start](#quick-start)
 - [Highlights](#highlights)
 - [Results](#results)
 - [How It Works](#how-it-works)
 - [Getting Started](#getting-started)
 - [Training](#training)
 - [Inference](#inference)
+- [Web UI](#web-ui)
 - [Repository Structure](#repository-structure)
 - [Model Weights](#model-weights)
 - [Continuous Integration](#continuous-integration)
 - [Limitations and Known Issues](#limitations-and-known-issues)
 - [Datasets and Acknowledgements](#datasets-and-acknowledgements)
+
+## Quick Start
+
+Run the web UI with the trained RAF-DB models in four commands (macOS or Linux, Python 3.10+):
+
+```bash
+cd FacialNet
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python webui/server.py
+```
+
+Then open **http://localhost:8000** in Chrome, Safari or Firefox. The model weights must be in place first (see [Model Weights](#model-weights)); the submission zip already contains them. On Windows, activate the environment with `.venv\Scripts\activate` instead.
+
+| I want to… | Run (from `FacialNet/`, with `.venv` active) | Needs |
+| --- | --- | --- |
+| Use the web UI (webcam, images, benchmarks) | `python webui/server.py` | RAF-DB weights; RAF-DB test set for the sample faces |
+| Run the OpenCV webcam demo | `cd "Video Predicition" && python video_inference_efficientnet.py` | RAF-DB weights, webcam |
+| Run it on a video file with denoising | `cd "Video Predicition" && python video_inference_efficientnet.py clip.mp4 --denoise` | RAF-DB weights, DnCNN weights |
+| Retrain a RAF-DB model | `cd "Video Predicition" && jupyter nbconvert --to notebook --execute --inplace efficientnet.ipynb --ExecutePreprocessor.timeout=-1` | RAF-DB dataset, a GPU recommended |
+| Reproduce the denoising study | `cd Denoising && jupyter nbconvert --to notebook --execute --inplace denoising.ipynb --ExecutePreprocessor.timeout=-1` | RAF-DB dataset and the three RAF-DB weights |
+
+Each row is explained in detail in [Getting Started](#getting-started), [Training](#training), [Inference](#inference) and [Web UI](#web-ui).
 
 ## Highlights
 
@@ -29,6 +55,7 @@ The project compares three ImageNet-pretrained CNN backbones, **ResNet-18**, **D
 - **Real-time video emotion tracking:** OpenCV face detection, per-face emotion classification with softmax confidence, temporal smoothing and an FPS counter.
 - **Augmentation for real-world faces:** random zoom, flips, rotation, brightness and contrast changes and random occlusion keep clean RAF-DB accuracy the same, but make the models 2–9 points more accurate on dark, low-contrast, partly covered or tightly cropped faces.
 - **Noise robustness with DnCNN:** Gaussian noise cuts average RAF-DB accuracy from 87.2% to 34.8% (σ = 50); a DnCNN denoiser fine-tuned on faces restores it to 78.4%, and can clean every face in the live video pipeline.
+- **Web UI:** a local browser app with live webcam tracking, photo upload, side-by-side model comparison, an interactive noise and denoising demo and interactive benchmark charts. It needs no packages beyond `requirements.txt`.
 - **Static image prediction:** single-image scripts for the FER2013 models.
 - **Runs anywhere PyTorch does:** the RAF-DB notebooks pick NVIDIA CUDA, Apple Silicon (`mps`) or CPU automatically, and work unchanged on Kaggle or locally.
 - **Notebooks with results:** the training notebooks are saved with their outputs, including per-epoch loss and accuracy and training curves; the RAF-DB notebooks also report per-class test accuracy.
@@ -37,27 +64,29 @@ The project compares three ImageNet-pretrained CNN backbones, **ResNet-18**, **D
 
 ### RAF-DB (color, 7 classes, 3,068 test images)
 
-Trained for 12 epochs on an Apple M4 MacBook Air using the `mps` backend, with the augmentation described in [Preprocessing and augmentation](#preprocessing-and-augmentation). Time per epoch is the wall-clock time of one uninterrupted training and test pass.
+Trained for 20 epochs on an Apple M4 MacBook Air using the `mps` backend, with the augmentation described in [Preprocessing and augmentation](#preprocessing-and-augmentation). These are the weights in `Video Predicition/` that the video scripts and the web UI use by default. Time per epoch is the median wall-clock time of one training and test pass.
 
-| Model | Parameters | Weights file | Time per epoch | Test accuracy |
-| --- | --- | --- | --- | --- |
-| ResNet-18 | 11.2M | 45 MB | 2.0 min | 87.03% |
-| DenseNet-121 | 7.0M | 28 MB | 5.2 min | **87.45%** |
-| EfficientNet-B0 | 4.0M | 16 MB | 3.8 min | 87.06% |
+| Model | Parameters | Weights file | Time per epoch | Final train accuracy | Test accuracy |
+| --- | --- | --- | --- | --- | --- |
+| ResNet-18 | 11.2M | 45 MB | 2.1 min | 96.6% | 87.22% |
+| DenseNet-121 | 7.0M | 28 MB | 5.0 min | 97.2% | **88.01%** |
+| EfficientNet-B0 | 4.0M | 16 MB | 3.6 min | 98.1% | 87.06% |
 
-The three models are within 0.5 points of each other, which is within run-to-run noise (see [Effect of data augmentation](#effect-of-data-augmentation-raf-db)). EfficientNet-B0 gets there with about a third of ResNet-18's parameters.
+DenseNet-121 is about 0.8 points ahead of the other two, which is close to the run-to-run noise of about 1 point (see [Effect of data augmentation](#effect-of-data-augmentation-raf-db)). EfficientNet-B0 matches ResNet-18 with about a third of its parameters.
+
+Training for 20 instead of 12 epochs changed test accuracy by +0.19 (ResNet-18), +0.56 (DenseNet-121) and 0.00 points (EfficientNet-B0). The 12-epoch models are kept in `Video Predicition/aug12_weights/` and can be selected in the web UI.
 
 Per-class test accuracy:
 
 | Emotion (test images) | ResNet-18 | DenseNet-121 | EfficientNet-B0 |
 | --- | --- | --- | --- |
-| Surprise (329) | **89.4%** | 88.4% | 87.2% |
-| Fear (74) | **63.5%** | 54.1% | 58.1% |
-| Disgust (160) | 58.8% | 54.4% | **62.5%** |
-| Happy (1,185) | **94.1%** | 93.9% | 93.0% |
-| Sad (478) | 85.8% | 87.9% | **90.6%** |
-| Anger (162) | 82.7% | **85.8%** | 78.4% |
-| Neutral (680) | 84.7% | **87.2%** | 85.1% |
+| Surprise (329) | 87.8% | 86.9% | **88.1%** |
+| Fear (74) | 56.8% | **58.1%** | **58.1%** |
+| Disgust (160) | 62.5% | 60.6% | **65.0%** |
+| Happy (1,185) | 93.8% | **94.9%** | 92.8% |
+| Sad (478) | 87.9% | 85.4% | **89.1%** |
+| Anger (162) | 80.9% | **85.2%** | 79.0% |
+| Neutral (680) | 85.6% | **88.8%** | 85.3% |
 
 Fear and Disgust are the hardest classes for every model. They are also the least represented in the training set (see [Datasets](#datasets)).
 
@@ -76,7 +105,7 @@ All numbers above are the test accuracy after the final epoch, as printed in the
 
 ### Effect of data augmentation (RAF-DB)
 
-The first version of the RAF-DB models was trained with only a horizontal flip and ±15° rotation. The current models add random zoom, brightness and contrast changes and random occlusion (see [Preprocessing and augmentation](#preprocessing-and-augmentation)); everything else in the recipe is unchanged. Both versions were evaluated on the same test images, so each comparison is paired: the confidence interval is a bootstrap over test images, and the p-value is an exact McNemar test on the images that only one version classifies correctly.
+This comparison uses two 12-epoch runs. The first version of the RAF-DB models (`Video Predicition/baseline_weights/`) was trained with only a horizontal flip and ±15° rotation. The second (`Video Predicition/aug12_weights/`) adds random zoom, brightness and contrast changes and random occlusion (see [Preprocessing and augmentation](#preprocessing-and-augmentation)); everything else in the recipe is unchanged. Both versions were evaluated on the same test images, so each comparison is paired: the confidence interval is a bootstrap over test images, and the p-value is an exact McNemar test on the images that only one version classifies correctly.
 
 On the clean test set, the extra augmentation makes no significant difference:
 
@@ -123,7 +152,7 @@ Emotion accuracy on noisy faces, before and after the fine-tuned DnCNN:
 - Noise hurts every model, and EfficientNet-B0 most of all: it falls to 18.84% at σ = 25.
 - Denoising first brings all three models back to within 1.5 points of clean accuracy at σ = 15, within 3 points at σ = 25, and to about 78% at σ = 50.
 - Fine-tuning DnCNN on faces adds 0.4 dB PSNR at σ = 25 and 1.2 dB at σ = 50 over the authors' pretrained model.
-- These numbers were measured with the first version of the RAF-DB models (flip and rotation only; see [Effect of data augmentation](#effect-of-data-augmentation-raf-db)). The clean column resizes images on the GPU, so it differs from those models' PIL-resize accuracy by up to 0.2 points.
+- These numbers were measured with the first version of the RAF-DB models (`baseline_weights/`, flip and rotation only; see [Effect of data augmentation](#effect-of-data-augmentation-raf-db)). The clean column resizes images on the GPU, so it differs from those models' PIL-resize accuracy by up to 0.2 points.
 
 ![Clean, noisy and denoised RAF-DB faces with EfficientNet-B0 predictions](Denoising/denoising_examples.png)
 
@@ -193,7 +222,7 @@ The whole network is fine-tuned; no layers are frozen.
 | LR schedule | OneCycleLR, max lr 1e-3 | OneCycleLR, max lr 1e-3 |
 | Loss | Cross-entropy, label smoothing 0.1 | Cross-entropy |
 | Batch size | 64 | 64 |
-| Epochs | 12 | 15 |
+| Epochs | 20 (12 for the models in `aug12_weights/` and `baseline_weights/`) | 15 |
 | Random seed | 42 (`torch.manual_seed`) | Not set |
 | Mixed precision | On CUDA only (float32 on `mps`/CPU) | CUDA AMP |
 
@@ -234,22 +263,40 @@ flowchart LR
 
 ### Requirements
 
-- Python 3 with `pip`
-- An NVIDIA GPU (CUDA), an Apple Silicon Mac (`mps`) or a CPU; a GPU is strongly recommended for training
+- Python 3.10 or newer with `pip`
+- An NVIDIA GPU (CUDA), an Apple Silicon Mac (`mps`) or a CPU. Inference runs fine on a CPU; a GPU is strongly recommended for training
 - A webcam for live video inference
-- Disk space for the datasets (RAF-DB is about 60 MB) and the model weights (about 90 MB for the three RAF-DB models)
+- A modern browser (Chrome, Safari, Firefox or Edge) for the web UI
+- Disk space for the Python packages (about 1 GB), the datasets (RAF-DB is about 60 MB) and the model weights (about 90 MB for the three RAF-DB models)
 
 Tested with Python 3.14, PyTorch 2.14, torchvision 0.29 and OpenCV 4.14 on macOS (Apple M4). The original notebooks were run on Kaggle.
 
 ### Installation
 
+**From the submission zip:** unzip it and open a terminal in the `FacialNet` folder. The zip contains the trained weights, so you can skip straight to the web UI after installing the packages.
+
+**From GitHub:** the weights are not in the repository (see [Model Weights](#model-weights)).
+
 ```bash
 git clone https://github.com/SabariLRM/FacialNet.git
 cd FacialNet
+```
+
+Then create a virtual environment and install the dependencies:
+
+```bash
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+Check that PyTorch sees your accelerator (prints `cuda`, `mps` or `cpu`):
+
+```bash
+python -c "import torch; print('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')"
+```
+
+All commands below assume the virtual environment is active and the terminal is in the `FacialNet` folder.
 
 `opencv-python` is pinned below 5.0 because OpenCV 5 removed `cv2.CascadeClassifier`, which the video scripts use for face detection.
 
@@ -282,7 +329,7 @@ Replace `efficientnet.ipynb` with `resnet-model.ipynb` or `densenet.ipynb` for t
 
 1. Loads RAF-DB and prints the detected classes and image counts.
 2. Builds the pretrained backbone with a new 7-way head.
-3. Trains for 12 epochs, printing train/test loss, accuracy and epoch time.
+3. Trains for 20 epochs, printing train/test loss, accuracy and epoch time.
 4. Plots loss and accuracy curves and saves the weights next to the notebook (for example `efficientnet_b0_rafdb_final.pth`).
 5. Prints overall and per-class test accuracy.
 
@@ -302,6 +349,8 @@ It downloads the pretrained DnCNN, fine-tunes it, and saves `dncnn_rafdb_finetun
 `Image prediction/resnet-model.ipynb` and `Image prediction/densenet.ipynb` train on FER2013. They were written for Kaggle GPU notebooks: `data_dir` points at `/kaggle/input/datasets/msambare/fer2013`, and training uses CUDA mixed precision. Running them elsewhere needs a CUDA GPU and an updated `data_dir`.
 
 ## Inference
+
+For the browser app, see [Web UI](#web-ui). The scripts below are the original OpenCV and matplotlib tools.
 
 ### Live webcam or video file
 
@@ -340,6 +389,108 @@ cd "Image prediction"
 python resnet.py
 ```
 
+## Web UI
+
+`webui/` is a local browser app for the three RAF-DB models. It is a single Python file (`webui/server.py`) built on the standard library, plus a static HTML/CSS/JavaScript front end, so it needs no packages beyond `requirements.txt` and no build step.
+
+### Running it
+
+```bash
+python webui/server.py
+```
+
+Wait for `FacialNet web UI running at http://localhost:8000`, then open that address in a browser. Stop the server with `Ctrl+C`.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--port` | `8000` | Port to listen on; change it if 8000 is taken |
+| `--host` | `127.0.0.1` | Use `0.0.0.0` to open the UI from another device on your network |
+
+Browsers only allow camera access on `http://localhost` or HTTPS. If you open the UI from another device with `--host 0.0.0.0`, the Image and Benchmarks tabs work, but the webcam does not.
+
+The first prediction with each model takes a few seconds while its weights load; later frames take about 30–70 ms on an Apple M4.
+
+### Tabs
+
+**Live** analyses your webcam or a local video file in real time.
+
+- Click **Start camera** (allow access when the browser asks) or **Open video file**.
+- Every face gets a colored box with its emotion and confidence, and a thin strip under it showing all seven probabilities.
+- The side panel shows the dominant emotion of the largest face and its probability bars.
+- The **emotion timeline** stacks the probabilities of the last 60 seconds, with the share of time spent in each emotion underneath.
+- **Pause**, **Stop**, **Snapshot** (saves the frame with its overlay as a JPEG), a camera picker when several cameras are connected, and a **Mirror** toggle.
+- The HUD shows frames per second, server latency and the number of faces.
+
+**Image** classifies a single picture.
+
+- Drag and drop, paste (`Cmd/Ctrl+V`) or upload a photo.
+- **Random sample** loads a random RAF-DB test face; the colored chips load a test face of a specific emotion. The result line shows the true label and whether the prediction matches it. This needs the RAF-DB test set in `data/raf-db/test` (see [Download the datasets](#download-the-datasets)).
+- Each face gets a result card with the probability bars. With **Compare all three models** on, the card shows each model's full probability distribution and whether they agree.
+- With noise or the denoiser on, the card shows every stage: input face → noisy face → DnCNN output.
+
+**Benchmarks** shows interactive charts of the results in this README and `Denoising/results.json`: model summary cards, per-class accuracy, robustness gained from augmentation, accuracy under Gaussian noise with and without DnCNN, denoising PSNR/SSIM, and the class balance of the training set. Hover over a chart for exact values.
+
+### Settings sidebar
+
+| Setting | What it does |
+| --- | --- |
+| Model | EfficientNet-B0, DenseNet-121 or ResNet-18; the number is its test accuracy |
+| Weights | **Current (20 epochs)** from `Video Predicition/`, **Full aug, 12 epochs** from `aug12_weights/` or **Flip + rotation, 12 epochs** from `baseline_weights/`. Sets whose files are missing are hidden |
+| Compare all three models | Image tab only: runs every model on each face |
+| Face detection | **Auto** detects faces and falls back to the whole image when none are found; **Detect** only classifies detected faces; **Off** treats the whole image as one face (best for tight face crops such as RAF-DB images) |
+| Box padding | Extra margin around each detected face, 0–30% (5% matches the video scripts) |
+| Add Gaussian noise | Adds noise with σ = 0–75 (0–255 scale) to each face before classification, like the [denoising study](#noise-robustness-with-dncnn-raf-db) |
+| DnCNN denoiser | Cleans each face with the fine-tuned DnCNN before classification (needs `Denoising/dncnn_rafdb_finetuned.pth`) |
+| Temporal smoothing | Live tab only: blends each face's probabilities with its previous frames to remove flicker (0% = raw per-frame output) |
+
+The moon icon in the top bar switches between dark and light themes.
+
+### How it works
+
+```mermaid
+flowchart LR
+    A["Browser<br/>(webcam frame or image)"] -- "JPEG, POST /api/predict" --> B["Haar cascade<br/>face detection"]
+    B --> C["Pad and crop<br/>each face"]
+    C --> D["Optional: Gaussian noise,<br/>then DnCNN"]
+    D --> E["ResNet-18 / DenseNet-121 /<br/>EfficientNet-B0"]
+    E -- "JSON: boxes and 7 probabilities" --> F["Browser draws boxes, bars,<br/>timeline; smooths over time"]
+```
+
+- The browser scales each webcam frame to at most 640 px wide and sends it as a JPEG. It sends the next frame as soon as the previous answer arrives, so the frame rate adapts to the speed of your machine.
+- The server uses the same face detector, preprocessing (224×224, ImageNet normalization), model heads and RAF-DB label order as the video scripts. It picks CUDA, `mps` or CPU automatically and keeps every loaded model in memory.
+- In the Live tab, faces are matched between frames by box overlap, so each face keeps its own smoothed probabilities.
+- Nothing leaves your computer: the server only listens on `localhost` unless you pass `--host`.
+
+### API
+
+The front end uses three JSON endpoints, which can also be called directly:
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/info` | Device, class names, available models and weight sets, and `Denoising/results.json` |
+| `GET /api/sample?label=3` | A random RAF-DB test image (as a data URL) with its label index; `label` (0–6) is optional |
+| `POST /api/predict?models=efficientnet&weights=current` | Classifies the faces in the image sent as the request body (JPEG or PNG, up to 25 MB) |
+
+Query parameters of `/api/predict`: `models` (comma-separated `efficientnet`, `densenet`, `resnet`), `weights` (`current`, `aug12`, `baseline`), `detect` (`auto`, `on`, `off`), `pad` (0–0.5), `noise` (σ, 0–100), `denoise` (`1` or `0`), `crops` (`1` to return the face images of each stage) and `max_faces` (default 6).
+
+```bash
+curl -s -X POST --data-binary @face.jpg "http://localhost:8000/api/predict?models=efficientnet,densenet&detect=auto"
+```
+
+The response lists every face with its box `[x, y, w, h]` in image pixels and, for each model, the seven probabilities in the order Surprise, Fear, Disgust, Happy, Sad, Anger, Neutral, the top label and its confidence.
+
+### Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| `Address already in use` | Another program uses port 8000: run `python webui/server.py --port 8001` |
+| `FileNotFoundError` for a `.pth` file on start | The weights are missing; see [Model Weights](#model-weights) |
+| The top bar says **server offline** | The server stopped or the page was opened from a file; start the server and open `http://localhost:8000` |
+| The camera does not start | Allow camera access for the browser (on macOS: System Settings → Privacy & Security → Camera) and make sure no other app is using it |
+| No face is detected | The Haar detector needs a roughly frontal, well-lit face; for tight face crops set face detection to **Auto** or **Off** |
+| Random sample buttons are missing | Download RAF-DB into `data/raf-db` |
+| DnCNN switch is disabled | `Denoising/dncnn_rafdb_finetuned.pth` is missing |
+
 ## Repository Structure
 
 ```text
@@ -358,11 +509,17 @@ FacialNet/
 │   ├── efficientnet.ipynb            # EfficientNet-B0 training
 │   ├── video_inference_resnet.py     # Webcam / video emotion recognition, ResNet-18
 │   ├── video_inference_densnet.py    # Webcam / video emotion recognition, DenseNet-121
-│   └── video_inference_efficientnet.py  # Webcam / video emotion recognition, EfficientNet-B0 (optional --denoise)
+│   ├── video_inference_efficientnet.py  # Webcam / video emotion recognition, EfficientNet-B0 (optional --denoise)
+│   ├── *_rafdb_final.pth             # Current weights, 20 epochs (gitignored)
+│   ├── aug12_weights/                # Full augmentation, 12 epochs (gitignored)
+│   └── baseline_weights/             # Flip + rotation only, 12 epochs (gitignored)
 ├── Denoising/                        # Noise robustness study
 │   ├── denoising.ipynb               # Gaussian noise, DnCNN fine-tuning and evaluation
 │   ├── results.json                  # PSNR/SSIM and accuracy numbers
 │   └── *.png                         # Noise levels, denoising examples, accuracy vs noise
+├── webui/                            # Browser app (see Web UI)
+│   ├── server.py                     # HTTP server, face detection and model inference
+│   └── static/                       # index.html, style.css, app.js
 ├── resnet_model.ipynb                # Original FER2013 baseline, ResNet-18 (SGD)
 ├── densenet_model.ipynb              # Original FER2013 baseline, DenseNet-121 (SGD)
 ├── data/                             # Datasets, created locally (gitignored)
@@ -372,15 +529,16 @@ FacialNet/
 
 ## Model Weights
 
-Trained weights (`*.pth`) are gitignored and not published in the repository. Train them with the notebooks, or place previously trained files in the folder shown.
+Trained weights (`*.pth`) are gitignored and not published in the repository. The submission zip includes the files needed to run the web UI and the video scripts: the three current RAF-DB models and `dncnn_rafdb_finetuned.pth`. Otherwise, train them with the notebooks or place previously trained files in the folder shown.
 
 | File | Folder | Produced by | Used by |
 | --- | --- | --- | --- |
-| `resnet18_rafdb_final.pth` | `Video Predicition/` | `resnet-model.ipynb` | `video_inference_resnet.py` |
-| `densenet121_rafdb_final.pth` | `Video Predicition/` | `densenet.ipynb` | `video_inference_densnet.py` |
-| `efficientnet_b0_rafdb_final.pth` | `Video Predicition/` | `efficientnet.ipynb` | `video_inference_efficientnet.py` |
+| `resnet18_rafdb_final.pth` | `Video Predicition/` | `resnet-model.ipynb` | `video_inference_resnet.py`, web UI |
+| `densenet121_rafdb_final.pth` | `Video Predicition/` | `densenet.ipynb` | `video_inference_densnet.py`, web UI |
+| `efficientnet_b0_rafdb_final.pth` | `Video Predicition/` | `efficientnet.ipynb` | `video_inference_efficientnet.py`, web UI |
+| Same three file names | `Video Predicition/aug12_weights/`, `Video Predicition/baseline_weights/` | Earlier 12-epoch runs of the notebooks | Web UI (optional weight sets) |
 | `dncnn_color_blind.pth` | `Denoising/` | Downloaded from KAIR by `denoising.ipynb` | `denoising.ipynb` |
-| `dncnn_rafdb_finetuned.pth` | `Denoising/` | `denoising.ipynb` | `video_inference_efficientnet.py --denoise` |
+| `dncnn_rafdb_finetuned.pth` | `Denoising/` | `denoising.ipynb` | `video_inference_efficientnet.py --denoise`, web UI |
 | `resnet18_fer2013_optimized.pth` | `Image prediction/` | `resnet-model.ipynb` | `resnet.py` |
 | `densenet121_fer2013.pth` | `Image prediction/` | `densenet.ipynb` | `densenet.py` (expects `densenet121_fer2013(1).pth`) |
 | `efficientnet_b0_fer2013_amp.pth` | `Image prediction/` | Not included in this repository | `efficientnet.py` |

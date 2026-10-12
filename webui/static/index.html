@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FacialNet</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%237c6cff'/><circle cx='11' cy='13' r='2' fill='white'/><circle cx='21' cy='13' r='2' fill='white'/><path d='M10 20q6 5 12 0' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><circle cx="11" cy="13" r="2"/><circle cx="21" cy="13" r="2"/><path d="M10 20q6 5 12 0"/></svg>
+      </div>
+      <div>
+        <div class="brand-name">FacialNet</div>
+        <div class="brand-sub">Facial emotion recognition · RAF-DB</div>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="live" role="tab">
+        <svg viewBox="0 0 24 24"><path d="M15 10l5-3v10l-5-3z"/><rect x="3" y="6" width="12" height="12" rx="2"/></svg>Live
+      </button>
+      <button class="tab" data-tab="image" role="tab">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>Image
+      </button>
+      <button class="tab" data-tab="bench" role="tab">
+        <svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Benchmarks
+      </button>
+    </nav>
+    <div class="topbar-right">
+      <span class="chip" id="deviceChip"><span class="dot"></span><span>connecting…</span></span>
+      <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24"><path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- Settings -->
+    <aside class="settings panel" id="settings">
+      <section>
+        <h3>Model</h3>
+        <div class="seg" id="modelSeg">
+          <button data-v="efficientnet" class="on">EfficientNet-B0</button>
+          <button data-v="densenet">DenseNet-121</button>
+          <button data-v="resnet">ResNet-18</button>
+        </div>
+        <label class="row">
+          <span>Weights</span>
+          <select id="weightsSel"></select>
+        </label>
+        <label class="switch-row" id="compareRow">
+          <span>Compare all three models<small>Image tab only</small></span>
+          <input type="checkbox" id="compareAll"><span class="switch"></span>
+        </label>
+      </section>
+
+      <section>
+        <h3>Face detection</h3>
+        <div class="seg small" id="detectSeg">
+          <button data-v="auto" class="on" title="Detect faces, fall back to the whole image">Auto</button>
+          <button data-v="on" title="Only classify detected faces">Detect</button>
+          <button data-v="off" title="Treat the whole image as one face">Off</button>
+        </div>
+        <label class="slider">
+          <span>Box padding <b id="padVal">5%</b></span>
+          <input type="range" id="pad" min="0" max="30" step="1" value="5">
+        </label>
+      </section>
+
+      <section>
+        <h3>Noise robustness</h3>
+        <label class="slider">
+          <span>Add Gaussian noise <b id="noiseVal">off</b></span>
+          <input type="range" id="noise" min="0" max="75" step="5" value="0">
+        </label>
+        <div class="ticks"><span>0</span><span>15</span><span>25</span><span>50</span><span>75</span></div>
+        <label class="switch-row" id="denoiseRow">
+          <span>DnCNN denoiser<small>Fine-tuned on RAF-DB faces</small></span>
+          <input type="checkbox" id="denoise"><span class="switch"></span>
+        </label>
+      </section>
+
+      <section>
+        <h3>Live smoothing</h3>
+        <label class="slider">
+          <span>Temporal smoothing <b id="smoothVal">60%</b></span>
+          <input type="range" id="smooth" min="0" max="95" step="5" value="60">
+        </label>
+        <p class="hint">Blends each frame's probabilities with the previous ones to remove flicker.</p>
+      </section>
+
+      <section class="legend-section">
+        <h3>Emotions</h3>
+        <div class="legend" id="legend"></div>
+      </section>
+    </aside>
+
+    <main>
+      <!-- LIVE -->
+      <section class="view active" id="view-live">
+        <div class="live-grid">
+          <div class="panel stage-panel">
+            <div class="stage" id="liveStage">
+              <video id="video" playsinline muted></video>
+              <canvas id="overlay"></canvas>
+              <div class="stage-empty" id="liveEmpty">
+                <div class="pulse-ring">
+                  <svg viewBox="0 0 24 24"><path d="M15 10l5-3v10l-5-3z"/><rect x="3" y="6" width="12" height="12" rx="2"/></svg>
+                </div>
+                <h2>Real-time emotion tracking</h2>
+                <p>Frames are analysed by the local server. Nothing leaves your machine.</p>
+                <div class="btn-row">
+                  <button class="btn primary" id="startCam">Start camera</button>
+                  <label class="btn ghost">Open video file<input type="file" id="videoFile" accept="video/*" hidden></label>
+                </div>
+              </div>
+              <div class="hud" id="hud" hidden>
+                <span><b id="fps">0</b> fps</span>
+                <span><b id="latency">0</b> ms</span>
+                <span><b id="faceCount">0</b> faces</span>
+              </div>
+            </div>
+            <div class="stage-bar">
+              <div class="btn-row">
+                <button class="btn" id="stopCam" disabled>
+                  <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>Stop
+                </button>
+                <button class="btn" id="pauseBtn" disabled>
+                  <svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg><span>Pause</span>
+                </button>
+                <button class="btn" id="snapBtn" disabled>
+                  <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Snapshot
+                </button>
+              </div>
+              <div class="btn-row">
+                <select id="camSel" title="Camera"></select>
+                <label class="mini-toggle"><input type="checkbox" id="mirror" checked> Mirror</label>
+              </div>
+            </div>
+          </div>
+
+          <div class="side-col">
+            <div class="panel dominant" id="dominant">
+              <div class="dominant-label">Dominant emotion</div>
+              <div class="dominant-main">
+                <div class="emo-face" id="domFace"></div>
+                <div>
+                  <div class="dominant-name" id="domName">—</div>
+                  <div class="dominant-conf" id="domConf">Waiting for a face</div>
+                </div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <h3>Probabilities</h3>
+                <span class="muted small" id="probFace">primary face</span>
+              </div>
+              <div class="bars" id="liveBars"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel timeline-panel">
+          <div class="panel-head">
+            <h3>Emotion timeline</h3>
+            <div class="btn-row">
+              <span class="muted small">last 60 s · primary face</span>
+              <button class="btn small ghost" id="clearTimeline">Clear</button>
+            </div>
+          </div>
+          <canvas id="timeline" height="140"></canvas>
+          <div class="summary" id="summary"></div>
+        </div>
+        <div class="snapshots" id="snapshots"></div>
+      </section>
+
+      <!-- IMAGE -->
+      <section class="view" id="view-image">
+        <div class="image-grid">
+          <div class="panel">
+            <div class="drop" id="drop" tabindex="0">
+              <input type="file" id="fileInput" accept="image/*" hidden>
+              <div class="drop-empty" id="dropEmpty">
+                <div class="drop-icon">
+                  <svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+                </div>
+                <h2>Drop an image, paste, or browse</h2>
+                <p>Photos with one or more faces, or tight face crops</p>
+                <div class="btn-row center">
+                  <button class="btn primary" id="browseBtn">Browse files</button>
+                  <button class="btn ghost" id="sampleBtn">Random RAF-DB face</button>
+                </div>
+              </div>
+              <div class="img-stage" id="imgStage" hidden>
+                <img id="imgEl" alt="">
+                <svg id="imgBoxes"></svg>
+                <div class="loading" id="imgLoading" hidden><div class="spinner"></div></div>
+              </div>
+            </div>
+            <div class="stage-bar">
+              <div class="btn-row">
+                <button class="btn" id="browseBtn2">
+                  <svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>Upload
+                </button>
+                <button class="btn" id="sampleBtn2">
+                  <svg viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>Random sample
+                </button>
+              </div>
+              <div class="sample-chips" id="sampleChips" title="Sample a test face of this class"></div>
+            </div>
+            <div class="meta-line" id="imgMeta"></div>
+          </div>
+          <div class="results-col" id="faceResults">
+            <div class="panel placeholder">
+              <p class="muted">Results for each detected face appear here, including the pipeline stages when noise or denoising is enabled.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- BENCHMARKS -->
+      <section class="view" id="view-bench">
+        <div class="model-cards" id="modelCards"></div>
+        <div class="bench-grid">
+          <div class="panel">
+            <div class="panel-head"><h3>Per-class test accuracy</h3><span class="muted small">RAF-DB, 3,068 test images</span></div>
+            <div id="perClassChart" class="chart"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Robustness from augmentation</h3><span class="muted small">12 epochs · flip + rotation → full augmentation</span></div>
+            <div id="augChart" class="chart"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Accuracy under Gaussian noise</h3><span class="muted small">dashed: noisy · solid: DnCNN denoised</span></div>
+            <div id="noiseChart" class="chart"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Denoising quality</h3><span class="muted small">PSNR (dB) / SSIM vs clean faces</span></div>
+            <div id="psnrTable"></div>
+            <div class="panel-head" style="margin-top:20px"><h3>Class balance</h3><span class="muted small">training images</span></div>
+            <div id="balanceChart" class="chart"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
