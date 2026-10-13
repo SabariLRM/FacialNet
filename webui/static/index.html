@@ -25,6 +25,9 @@
       <button class="tab" data-tab="image" role="tab">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>Image
       </button>
+      <button class="tab" data-tab="gan" role="tab">
+        <svg viewBox="0 0 24 24"><path d="M11 3l1.9 5.1L18 10l-5.1 1.9L11 17l-1.9-5.1L4 10l5.1-1.9z"/><path d="M18.5 15l.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8z"/></svg>GAN
+      </button>
       <button class="tab" data-tab="bench" role="tab">
         <svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Benchmarks
       </button>
@@ -217,6 +220,79 @@
             <div class="panel placeholder">
               <p class="muted">Results for each detected face appear here, including the pipeline stages when noise or denoising is enabled.</p>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- GAN -->
+      <section class="view" id="view-gan">
+        <div class="panel placeholder" id="ganMissing" hidden>
+          <p class="muted">GAN weights not found. Run <b>GAN/gan.ipynb</b> to train the generator and create <b>GAN/cgan_rafdb_generator.pth</b>.</p>
+        </div>
+        <div class="gan-grid">
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Generated faces</h3>
+              <span class="muted small">none of these people exist</span>
+            </div>
+            <div class="gan-controls">
+              <div class="sample-chips" id="ganChips" title="Emotion to generate"></div>
+              <div class="btn-row">
+                <div class="seg small" id="ganCount" title="Number of faces">
+                  <button data-v="8" class="on">8</button><button data-v="16">16</button><button data-v="24">24</button>
+                </div>
+                <label class="seed-box" title="The same seed gives the same people">Seed <input type="number" id="ganSeed" min="0" max="999999"></label>
+                <button class="btn primary" id="ganNew">
+                  <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/><circle cx="9" cy="15" r="1.2" fill="currentColor"/></svg>New faces
+                </button>
+              </div>
+            </div>
+            <div class="gan-faces" id="ganFaces"></div>
+            <div class="gan-summary" id="ganSummary"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Emotion morph</h3>
+              <button class="btn small ghost" id="morphShuffle">New face</button>
+            </div>
+            <div class="morph-pick">
+              <select id="morphFrom" title="Start emotion"></select>
+              <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              <select id="morphTo" title="End emotion"></select>
+            </div>
+            <div class="morph-main" id="morphMain">
+              <img id="morphImg" alt="Generated face">
+              <div class="bars" id="morphBars"></div>
+            </div>
+            <label class="slider">
+              <span>Mix <b id="morphVal"></b></span>
+              <input type="range" id="morphT" min="0" max="8" step="1" value="0">
+            </label>
+            <div class="morph-strip" id="morphStrip"></div>
+            <p class="hint" style="margin-top:10px">Same random input; the generator's emotion parameters are blended from one emotion to the other. The bars show what the classifier sees.</p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h3>One face, every emotion</h3>
+            <div class="btn-row">
+              <span class="muted small">same random input, only the emotion label changes</span>
+              <button class="btn small ghost" id="identityShuffle">New face</button>
+            </div>
+          </div>
+          <div class="identity-row" id="identityRow"></div>
+        </div>
+
+        <div class="bench-grid">
+          <div class="panel">
+            <div class="panel-head"><h3>Do the faces show the requested emotion?</h3><span class="muted small">mean of the 3 classifiers</span></div>
+            <div id="ganAgreeChart" class="chart"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>About the GAN</h3><span class="muted small">GAN/results.json</span></div>
+            <div id="ganStats"></div>
           </div>
         </div>
       </section>

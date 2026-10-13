@@ -1,4 +1,4 @@
-"""FacialNet web UI: a local server for live and single-image emotion recognition.
+"""FacialNet web UI: a local server for live and single-image emotion recognition, and GAN face generation.
 
 Uses only the Python standard library on top of the project's own requirements
 (torch, torchvision, OpenCV, Pillow, NumPy), so no extra packages are needed.
@@ -33,6 +33,8 @@ STATIC = Path(__file__).resolve().parent / "static"
 VIDEO_DIR = ROOT / "Video Predicition"
 DNCNN_PATH = ROOT / "Denoising" / "dncnn_rafdb_finetuned.pth"
 RESULTS_PATH = ROOT / "Denoising" / "results.json"
+GAN_PATH = ROOT / "GAN" / "cgan_rafdb_generator.pth"
+GAN_RESULTS_PATH = ROOT / "GAN" / "results.json"
 RAFDB_TEST = ROOT / "data" / "raf-db" / "test"
 
 # RAF-DB folder order 1-7 (ImageFolder sorts the folder names)
@@ -63,12 +65,16 @@ PREPROCESS = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 ])
 
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], device=DEVICE).view(1, 3, 1, 1)
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], device=DEVICE).view(1, 3, 1, 1)
+
 FACE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
 # One model runs at a time; the GPU is shared and the Haar cascade is not thread safe
 INFER_LOCK = threading.Lock()
 _models = {}
 _denoiser = None
+_generator = None
 
 
 class DnCNN(nn.Module):
@@ -84,6 +90,39 @@ class DnCNN(nn.Module):
 
     def forward(self, noisy):
         return noisy - self.model(noisy)
+
+
+class ConditionalBatchNorm2d(nn.Module):
+    """BatchNorm with a learned scale and shift per emotion. y holds class weights (one-hot, or a mix of emotions)."""
+
+    def __init__(self, num_features, num_classes):
+        super().__init__()
+        self.bn = nn.BatchNorm2d(num_features, affine=False)
+        self.gain = nn.Embedding(num_classes, num_features)
+        self.bias = nn.Embedding(num_classes, num_features)
+
+    def forward(self, x, y):
+        return self.bn(x) * (y @ self.gain.weight)[:, :, None, None] + (y @ self.bias.weight)[:, :, None, None]
+
+
+class Generator(nn.Module):
+    """Conditional DCGAN generator from GAN/gan.ipynb: 64x64 faces in [-1, 1]."""
+
+    z_dim = 128
+
+    def __init__(self, num_classes=7, channels=(512, 256, 128, 64)):
+        super().__init__()
+        self.project = nn.ConvTranspose2d(self.z_dim, channels[0], 4, 1, 0, bias=False)
+        self.bns = nn.ModuleList(ConditionalBatchNorm2d(c, num_classes) for c in channels)
+        self.ups = nn.ModuleList(nn.ConvTranspose2d(channels[i], channels[i + 1], 4, 2, 1, bias=False)
+                                 for i in range(len(channels) - 1))
+        self.out = nn.ConvTranspose2d(channels[-1], 3, 4, 2, 1)
+
+    def forward(self, z, y):
+        h = self.project(z.view(z.size(0), -1, 1, 1))
+        for bn, up in zip(self.bns, self.ups):
+            h = up(F.relu(bn(h, y)))
+        return torch.tanh(self.out(F.relu(self.bns[-1](h, y))))
 
 
 def build_model(arch):
@@ -119,6 +158,15 @@ def get_denoiser():
         denoiser.load_state_dict(torch.load(DNCNN_PATH, map_location="cpu"))
         _denoiser = denoiser.to(DEVICE).eval()
     return _denoiser
+
+
+def get_generator():
+    global _generator
+    if _generator is None:
+        generator = Generator(len(CLASS_NAMES))
+        generator.load_state_dict(torch.load(GAN_PATH, map_location="cpu"))
+        _generator = generator.to(DEVICE).eval()
+    return _generator
 
 
 def to_data_url(pil_img, size=160):
@@ -243,6 +291,78 @@ def sample_image(label=None):
     }
 
 
+def generate(params):
+    """Generate faces with the conditional GAN and classify each one with a RAF-DB model.
+
+    mode=label:    n faces, all of one emotion (label=0-6) or cycling through the seven (label=all)
+    mode=emotions: one random face rendered with each of the seven emotions
+    mode=morph:    one random face morphing from emotion `from` to emotion `to` in `steps` steps
+    The same seed always gives the same random faces, so changing the emotion keeps the people.
+    """
+    if not GAN_PATH.exists():
+        raise ValueError("GAN weights not found at GAN/cgan_rafdb_generator.pth")
+    arch = params.get("model", "efficientnet")
+    if arch not in ARCHS:
+        arch = "efficientnet"
+    weight_set = params.get("weights", "current")
+    if weight_set not in WEIGHT_SETS:
+        weight_set = "current"
+    mode = params.get("mode", "label")
+    seed = int(params["seed"]) if params.get("seed", "").isdigit() else random.randrange(1_000_000)
+    num_classes = len(CLASS_NAMES)
+
+    if mode == "emotions":
+        y = torch.eye(num_classes)
+        z_count = 1
+    elif mode == "morph":
+        a = min(max(int(params.get("from", 6)), 0), num_classes - 1)
+        b = min(max(int(params.get("to", 3)), 0), num_classes - 1)
+        t = torch.linspace(0, 1, min(max(int(params.get("steps", 9)), 2), 24))
+        y = torch.zeros(len(t), num_classes)
+        y[:, a] += 1 - t
+        y[:, b] += t
+        z_count = 1
+    else:
+        n = min(max(int(params.get("n", 8)), 1), 48)
+        label = params.get("label", "all")
+        labels = [int(label)] * n if label.isdigit() and int(label) < num_classes else [i % num_classes for i in range(n)]
+        y = F.one_hot(torch.tensor(labels), num_classes).float()
+        z_count = n
+
+    z = torch.randn(z_count, Generator.z_dim, generator=torch.Generator().manual_seed(seed))
+    z = z.expand(len(y), -1) if z_count == 1 else z
+
+    t0 = time.perf_counter()
+    with INFER_LOCK, torch.no_grad():
+        faces = (get_generator()(z.to(DEVICE), y.to(DEVICE)) * 0.5 + 0.5).clamp(0, 1)
+        t1 = time.perf_counter()
+        batch = F.interpolate(faces, size=(224, 224), mode="bilinear", align_corners=False)
+        probs = F.softmax(get_model(arch, weight_set)((batch - IMAGENET_MEAN) / IMAGENET_STD), dim=1).cpu()
+        faces = faces.cpu()
+        t2 = time.perf_counter()
+
+    out = []
+    for face, mix, p in zip(faces, y.tolist(), probs.tolist()):
+        top = int(np.argmax(p))
+        img = transforms.functional.to_pil_image(face).resize((128, 128), Image.LANCZOS)
+        out.append({
+            "image": to_data_url(img, size=128),
+            "mix": mix,
+            "target": int(np.argmax(mix)),
+            "probs": p,
+            "top": top,
+            "label": CLASS_NAMES[top],
+            "confidence": p[top],
+        })
+    return {
+        "seed": seed,
+        "mode": mode,
+        "model": arch,
+        "faces": out,
+        "timing": {"generate_ms": (t1 - t0) * 1000, "classify_ms": (t2 - t1) * 1000},
+    }
+
+
 def info():
     available = {}
     for ws in WEIGHT_SETS:
@@ -250,6 +370,10 @@ def info():
     results = None
     if RESULTS_PATH.exists():
         results = json.loads(RESULTS_PATH.read_text())
+    gan_results = None
+    if GAN_RESULTS_PATH.exists():
+        gan_results = json.loads(GAN_RESULTS_PATH.read_text())
+        gan_results.pop("history", None)
     return {
         "device": DEVICE.type,
         "classes": CLASS_NAMES,
@@ -259,6 +383,8 @@ def info():
         "denoiser": DNCNN_PATH.exists(),
         "samples": RAFDB_TEST.exists(),
         "results": results,
+        "gan": GAN_PATH.exists(),
+        "gan_results": gan_results,
     }
 
 
@@ -287,6 +413,8 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/sample":
                 label = int(params["label"]) if params.get("label", "").isdigit() else None
                 return self.send_json(sample_image(label))
+            if url.path == "/api/generate":
+                return self.send_json(generate(params))
         except Exception as exc:
             return self.send_json({"error": str(exc)}, 400)
 

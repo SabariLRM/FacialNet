@@ -166,7 +166,7 @@ function bindSettings() {
 let settingsTimer;
 function onSettingsChanged() {
   clearTimeout(settingsTimer);
-  settingsTimer = setTimeout(() => { if (Img.blob) Img.run(); }, 120);
+  settingsTimer = setTimeout(() => { if (Img.blob) Img.run(); Gan.onSettingsChanged(); }, 120);
 }
 
 function refreshModelAvailability() {
@@ -186,8 +186,9 @@ function bindTabs() {
   $$(".tab").forEach(t => t.addEventListener("click", () => {
     $$(".tab").forEach(x => x.classList.toggle("active", x === t));
     $$(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + t.dataset.tab));
-    $("#compareRow").classList.toggle("disabled", t.dataset.tab === "live");
+    $("#compareRow").classList.toggle("disabled", t.dataset.tab === "live" || t.dataset.tab === "gan");
     if (t.dataset.tab === "bench") Bench.render();
+    if (t.dataset.tab === "gan") Gan.start();
     if (t.dataset.tab === "live") Live.resizeTimeline();
     history.replaceState(null, "", "#" + t.dataset.tab);
   }));
@@ -628,10 +629,11 @@ const Img = {
     }
   },
 
-  load(blob, name, groundTruth = null) {
+  load(blob, name, groundTruth = null, truthName = "ground truth") {
     this.blob = blob;
     this.name = name;
     this.groundTruth = groundTruth;
+    this.truthName = truthName;
     this.lastResult = null;
     const img = $("#imgEl");
     if (img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
@@ -696,7 +698,7 @@ const Img = {
     if (this.groundTruth !== null && res.faces[0]) {
       const pred = this.primaryResult(res.faces[0]).top;
       const ok = pred === this.groundTruth;
-      meta += `<span class="${ok ? "gt-ok" : "gt-bad"}">ground truth: ${EMOTIONS[this.groundTruth]} ${ok ? "✓" : "✗"}</span>`;
+      meta += `<span class="${ok ? "gt-ok" : "gt-bad"}">${this.truthName}: ${EMOTIONS[this.groundTruth]} ${ok ? "✓" : "✗"}</span>`;
     }
     $("#imgMeta").innerHTML = meta;
 
@@ -753,6 +755,219 @@ const Img = {
     </div>`;
   },
 };
+
+/* ================= GAN ================= */
+const Gan = {
+  started: false, label: "all", count: 8, seed: 0, morphSeed: 0, identitySeed: 0, morphIndex: 0,
+  seq: {}, results: {}, settingsKey: "",
+
+  init() {
+    $("#ganChips").innerHTML = `<button data-v="all" class="on">All emotions</button>` + EMOTIONS.map((e, i) =>
+      `<button data-v="${i}"><i style="background:${EMO_COLORS[i]}"></i>${e}</button>`).join("");
+    $$("#ganChips button").forEach(b => b.addEventListener("click", () => {
+      $$("#ganChips button").forEach(x => x.classList.toggle("on", x === b));
+      this.label = b.dataset.v;
+      this.runGrid();
+    }));
+    $$("#ganCount button").forEach(b => b.addEventListener("click", () => {
+      $$("#ganCount button").forEach(x => x.classList.toggle("on", x === b));
+      this.count = Number(b.dataset.v);
+      this.runGrid();
+    }));
+    $("#ganSeed").addEventListener("change", e => {
+      const v = Math.max(0, Math.min(999999, Math.floor(Number(e.target.value) || 0)));
+      e.target.value = v;
+      this.seed = v;
+      this.runGrid();
+    });
+    $("#ganNew").addEventListener("click", () => { this.seed = randomSeed(); this.runGrid(); });
+
+    const opts = EMOTIONS.map((e, i) => `<option value="${i}">${e}</option>`).join("");
+    $("#morphFrom").innerHTML = opts;
+    $("#morphTo").innerHTML = opts;
+    $("#morphFrom").value = "6";
+    $("#morphTo").value = "3";
+    ["#morphFrom", "#morphTo"].forEach(s => $(s).addEventListener("change", () => this.runMorph()));
+    $("#morphT").addEventListener("input", e => this.showMorph(Number(e.target.value)));
+    $("#morphShuffle").addEventListener("click", () => { this.morphSeed = randomSeed(); this.runMorph(); });
+    $("#identityShuffle").addEventListener("click", () => { this.identitySeed = randomSeed(); this.runIdentity(); });
+  },
+
+  // Called when the tab opens: the first visit draws new random faces
+  start() {
+    this.renderStats();
+    if (this.started) return;
+    this.started = true;
+    if (state.info && !state.info.gan) { this.showMissing(); return; }
+    this.seed = randomSeed();
+    this.morphSeed = randomSeed();
+    this.identitySeed = randomSeed();
+    this.runAll();
+  },
+
+  showMissing() {
+    $("#ganMissing").hidden = false;
+    $$("#view-gan > :not(#ganMissing)").forEach(el => (el.hidden = true));
+  },
+
+  // Re-check the same faces when the classifier in the sidebar changes
+  onSettingsChanged() {
+    const key = state.model + "/" + state.weights;
+    if (key === this.settingsKey) return;
+    this.settingsKey = key;
+    if (this.started && $("#ganMissing").hidden) this.runAll();
+  },
+
+  runAll() {
+    this.settingsKey = state.model + "/" + state.weights;
+    this.runGrid();
+    this.runIdentity();
+    this.runMorph();
+  },
+
+  async request(kind, params, busyEl) {
+    const seq = (this.seq[kind] || 0) + 1;
+    this.seq[kind] = seq;
+    busyEl.classList.add("busy");
+    try {
+      const q = new URLSearchParams({ model: state.model, weights: state.weights, ...params });
+      const res = await fetch("/api/generate?" + q);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Generation failed");
+      return seq === this.seq[kind] ? data : null;
+    } catch (err) {
+      if (seq === this.seq[kind]) toast(err.message, true);
+      return null;
+    } finally {
+      if (seq === this.seq[kind]) busyEl.classList.remove("busy");
+    }
+  },
+
+  async runGrid() {
+    $("#ganSeed").value = this.seed;
+    const data = await this.request("grid", { mode: "label", label: this.label, n: this.count, seed: this.seed }, $("#ganFaces"));
+    if (!data) return;
+    this.results.grid = data;
+    $("#ganFaces").innerHTML = data.faces.map((f, i) => this.card(f, i, "grid")).join("");
+    this.bindCards($("#ganFaces"), "grid");
+    const hits = data.faces.filter(f => f.top === f.target).length;
+    const t = data.timing;
+    $("#ganSummary").innerHTML = `${MODEL_LABELS[data.model]} recognises the requested emotion in <b>${hits} of ${data.faces.length}</b> faces · ` +
+      `generated in <b>${Math.round(t.generate_ms)} ms</b>, classified in <b>${Math.round(t.classify_ms)} ms</b> · click a face to analyse it in the Image tab`;
+  },
+
+  async runIdentity() {
+    const data = await this.request("identity", { mode: "emotions", seed: this.identitySeed }, $("#identityRow"));
+    if (!data) return;
+    this.results.identity = data;
+    $("#identityRow").innerHTML = data.faces.map((f, i) => this.card(f, i, "identity")).join("");
+    this.bindCards($("#identityRow"), "identity");
+  },
+
+  async runMorph() {
+    const steps = Number($("#morphT").max) + 1;
+    const params = { mode: "morph", from: $("#morphFrom").value, to: $("#morphTo").value, steps, seed: this.morphSeed };
+    const data = await this.request("morph", params, $("#morphMain"));
+    if (!data) return;
+    this.results.morph = data;
+    $("#morphStrip").innerHTML = data.faces.map((f, i) => `<img src="${f.image}" data-i="${i}" alt="Step ${i + 1}">`).join("");
+    $$("#morphStrip img").forEach(img => img.addEventListener("click", () => {
+      $("#morphT").value = img.dataset.i;
+      this.showMorph(Number(img.dataset.i));
+    }));
+    this.showMorph(Number($("#morphT").value));
+  },
+
+  showMorph(i) {
+    const data = this.results.morph;
+    if (!data) return;
+    const f = data.faces[i];
+    const a = Number($("#morphFrom").value), b = Number($("#morphTo").value);
+    $("#morphImg").src = f.image;
+    $("#morphMain").style.setProperty("--emo", EMO_COLORS[f.top]);
+    $("#morphBars").innerHTML = barsHTML(f.probs, true);
+    const pb = Math.round(f.mix[b] * 100);
+    $("#morphVal").textContent = a === b ? EMOTIONS[a] : `${EMOTIONS[a]} ${100 - pb}% · ${EMOTIONS[b]} ${pb}%`;
+    $$("#morphStrip img").forEach((img, j) => img.classList.toggle("on", j === i));
+    setRangeFill($("#morphT"));
+  },
+
+  card(f, i, kind) {
+    const ok = f.top === f.target;
+    const verdict = ok ? `✓ ${pct(f.confidence, 0)}` : `✗ ${f.label} ${pct(f.confidence, 0)}`;
+    const tip = `Requested ${EMOTIONS[f.target]} · ${MODEL_LABELS[this.results[kind]?.model || state.model]} sees ${f.label} (${pct(f.confidence)})`;
+    return `<button class="gan-face" data-i="${i}" style="--emo:${EMO_COLORS[f.target]}" title="${esc(tip)}">
+      <img src="${f.image}" alt="Generated ${EMOTIONS[f.target]} face">
+      <div class="gf-cap"><span class="req"><i></i>${EMOTIONS[f.target]}</span><span class="got ${ok ? "ok" : "bad"}">${verdict}</span></div>
+    </button>`;
+  },
+
+  bindCards(root, kind) {
+    $$(".gan-face", root).forEach(el => el.addEventListener("click", () => this.analyse(this.results[kind], Number(el.dataset.i))));
+  },
+
+  // Open a generated face in the Image tab for the full per-model analysis
+  async analyse(data, i) {
+    const f = data.faces[i];
+    const blob = await (await fetch(f.image)).blob();
+    $('.tab[data-tab="image"]').click();
+    Img.load(blob, `GAN face · seed ${data.seed} · ${EMOTIONS[f.target]}`, f.target, "requested");
+  },
+
+  renderStats() {
+    const r = state.info?.gan_results;
+    if (!r) {
+      $("#ganAgreeChart").innerHTML = '<p class="muted">GAN/results.json not found.</p>';
+      $("#ganStats").innerHTML = '<p class="muted">GAN/results.json not found.</p>';
+      return;
+    }
+    const models = r.classifier_agreement.models;
+    const names = Object.keys(models);
+    const mean = kind => EMOTIONS.map((_, c) => names.reduce((s, n) => s + models[n][kind][c], 0) / names.length);
+    const real = mean("real_64px"), gen = mean("generated");
+    const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
+
+    const W = 560, rowH = 34, padL = 92, padR = 46, padT = 4;
+    const H = padT + EMOTIONS.length * rowH + 22;
+    const x = v => padL + v * (W - padL - padR);
+    const C = ["#8a90a2", "var(--accent)"];
+    let s = `<svg viewBox="0 0 ${W} ${H}">`;
+    for (let v = 0; v <= 1.0001; v += 0.2) s += `<line class="grid" x1="${x(v)}" x2="${x(v)}" y1="${padT}" y2="${H - 20}"/><text x="${x(v)}" y="${H - 6}" text-anchor="middle">${Math.round(v * 100)}%</text>`;
+    EMOTIONS.forEach((e, i) => {
+      const y0 = padT + i * rowH;
+      const tip = `<b>${e}</b><br>` + names.map(n => `${n}: real ${pct(models[n].real_64px[i])} · generated ${pct(models[n].generated[i])}`).join("<br>");
+      s += `<g data-tip="${esc(tip)}"><rect x="0" y="${y0}" width="${W}" height="${rowH}" fill="transparent" stroke="none"/>`;
+      s += `<circle cx="10" cy="${y0 + rowH / 2}" r="4" fill="${EMO_COLORS[i]}" stroke="none"/>`;
+      s += `<text class="lbl" x="20" y="${y0 + rowH / 2}" dominant-baseline="middle">${e}</text>`;
+      [real[i], gen[i]].forEach((v, j) => {
+        const by = y0 + 6 + j * 12;
+        s += `<rect x="${x(0)}" y="${by}" width="${Math.max(0, x(v) - x(0))}" height="10" rx="2.5" fill="${C[j]}" stroke="none"/>`;
+        s += `<text class="val" x="${x(v) + 5}" y="${by + 8.5}">${Math.round(v * 100)}</text>`;
+      });
+      s += `</g>`;
+    });
+    s += "</svg>";
+    $("#ganAgreeChart").innerHTML = s + legendHTML([["Real test faces (64×64)", C[0]], ["Generated faces", C[1]]]) +
+      `<p class="hint" style="margin-top:8px">Share of faces that the classifiers label with the emotion the generator was asked for (${r.classifier_agreement.per_class_generated} generated faces per emotion). Real faces are downscaled to the GAN's 64×64 size for a fair reference.</p>`;
+    attachTips($("#ganAgreeChart"));
+
+    const m = r.model, t = r.training, fd = r.frechet_distance;
+    const rows = names.map(n => `<tr><td>${n}</td><td>${pct(avg(models[n].real_64px))}</td><td>${pct(avg(models[n].generated))}</td></tr>`).join("");
+    $("#ganStats").innerHTML = `
+      <div class="stat-tiles">
+        <div><span>Generator</span><b>${(m.generator_parameters / 1e6).toFixed(1)}M</b><small>parameters</small></div>
+        <div><span>Training</span><b>${t.iterations.toLocaleString()}</b><small>iterations · ${Math.round(t.minutes)} min</small></div>
+        <div><span>Fréchet distance</span><b>${fd.generated_ema_vs_test.toFixed(1)}</b><small>real vs real: ${fd.real_train_vs_test.toFixed(1)}</small></div>
+      </div>
+      <table class="data"><thead><tr><th>Classifier</th><th>Real 64×64</th><th>Generated</th></tr></thead><tbody>${rows}</tbody></table>
+      <p class="hint" style="margin-top:10px">Mean over the seven emotions. Fréchet distance between ${fd.images_per_set.toLocaleString()} generated and real test faces in EfficientNet-B0 feature space (lower is better; without EMA: ${fd.generated_raw_vs_test.toFixed(1)}).
+      Conditional DCGAN with emotion-conditional BatchNorm in the generator and a projection discriminator, trained on ${r.train_images.toLocaleString()} RAF-DB faces at ${r.image_size}×${r.image_size}.</p>`;
+  },
+};
+
+function randomSeed() {
+  return Math.floor(Math.random() * 1000000);
+}
 
 /* ================= Benchmarks ================= */
 const Tip = {
@@ -926,6 +1141,7 @@ const Bench = {
 /* ================= Boot ================= */
 async function boot() {
   bindSettings();
+  Gan.init();
   bindTabs();
   Live.init();
   Img.init();
@@ -954,6 +1170,8 @@ async function boot() {
       $("#sampleChips").hidden = true;
     }
     if ($("#view-bench").classList.contains("active")) { Bench.rendered = false; Bench.render(); }
+    if (!info.gan) Gan.showMissing();
+    if ($("#view-gan").classList.contains("active")) Gan.renderStats();
   } catch {
     const chip = $("#deviceChip");
     chip.classList.add("err");
