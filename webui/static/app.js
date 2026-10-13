@@ -793,12 +793,13 @@ const Gan = {
     $("#identityShuffle").addEventListener("click", () => { this.identitySeed = randomSeed(); this.runIdentity(); });
   },
 
-  // Called when the tab opens: the first visit draws new random faces
+  // Called when the tab opens: the first visit draws new random faces.
+  // Waits for /api/info (boot() calls it again), which says whether the GAN weights exist.
   start() {
     this.renderStats();
-    if (this.started) return;
+    if (this.started || !state.info) return;
     this.started = true;
-    if (state.info && !state.info.gan) { this.showMissing(); return; }
+    if (!state.info.gan) { this.showMissing(); return; }
     this.seed = randomSeed();
     this.morphSeed = randomSeed();
     this.identitySeed = randomSeed();
@@ -951,7 +952,7 @@ const Gan = {
       `<p class="hint" style="margin-top:8px">Share of faces that the classifiers label with the emotion the generator was asked for (${r.classifier_agreement.per_class_generated} generated faces per emotion). Real faces are downscaled to the GAN's 64×64 size for a fair reference.</p>`;
     attachTips($("#ganAgreeChart"));
 
-    const m = r.model, t = r.training, fd = r.frechet_distance;
+    const m = r.model, t = r.training, fd = r.frechet_distance, sel = r.checkpoint_selection;
     const rows = names.map(n => `<tr><td>${n}</td><td>${pct(avg(models[n].real_64px))}</td><td>${pct(avg(models[n].generated))}</td></tr>`).join("");
     $("#ganStats").innerHTML = `
       <div class="stat-tiles">
@@ -960,7 +961,8 @@ const Gan = {
         <div><span>Fréchet distance</span><b>${fd.generated_ema_vs_test.toFixed(1)}</b><small>real vs real: ${fd.real_train_vs_test.toFixed(1)}</small></div>
       </div>
       <table class="data"><thead><tr><th>Classifier</th><th>Real 64×64</th><th>Generated</th></tr></thead><tbody>${rows}</tbody></table>
-      <p class="hint" style="margin-top:10px">Mean over the seven emotions. Fréchet distance between ${fd.images_per_set.toLocaleString()} generated and real test faces in EfficientNet-B0 feature space (lower is better; without EMA: ${fd.generated_raw_vs_test.toFixed(1)}).
+      <p class="hint" style="margin-top:10px">Mean over the seven emotions. Fréchet distance between ${fd.images_per_set.toLocaleString()} generated and real test faces in EfficientNet-B0 feature space (lower is better; last raw weights: ${fd.generated_raw_vs_test.toFixed(1)}).
+      ${sel ? `The saved generator is the averaged checkpoint from iteration ${sel.best_iteration.toLocaleString()}, the one closest to the training faces.` : ""}
       Conditional DCGAN with emotion-conditional BatchNorm in the generator and a projection discriminator, trained on ${r.train_images.toLocaleString()} RAF-DB faces at ${r.image_size}×${r.image_size}.</p>`;
   },
 };
@@ -1171,7 +1173,7 @@ async function boot() {
     }
     if ($("#view-bench").classList.contains("active")) { Bench.rendered = false; Bench.render(); }
     if (!info.gan) Gan.showMissing();
-    if ($("#view-gan").classList.contains("active")) Gan.renderStats();
+    if ($("#view-gan").classList.contains("active")) Gan.start();
   } catch {
     const chip = $("#deviceChip");
     chip.classList.add("err");

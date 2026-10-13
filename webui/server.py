@@ -75,6 +75,7 @@ INFER_LOCK = threading.Lock()
 _models = {}
 _denoiser = None
 _generator = None
+_generator_mtime = None
 
 
 class DnCNN(nn.Module):
@@ -161,11 +162,13 @@ def get_denoiser():
 
 
 def get_generator():
-    global _generator
-    if _generator is None:
+    # Reload when GAN/gan.ipynb saves new weights, so a running server picks up a retrained GAN
+    global _generator, _generator_mtime
+    mtime = GAN_PATH.stat().st_mtime
+    if _generator is None or mtime != _generator_mtime:
         generator = Generator(len(CLASS_NAMES))
         generator.load_state_dict(torch.load(GAN_PATH, map_location="cpu"))
-        _generator = generator.to(DEVICE).eval()
+        _generator, _generator_mtime = generator.to(DEVICE).eval(), mtime
     return _generator
 
 
@@ -309,14 +312,21 @@ def generate(params):
         weight_set = "current"
     mode = params.get("mode", "label")
     seed = int(params["seed"]) if params.get("seed", "").isdigit() else random.randrange(1_000_000)
+    if seed >= 2 ** 63:
+        raise ValueError("seed must be below 2^63")
     num_classes = len(CLASS_NAMES)
+
+    def emotion(name, default):
+        value = params.get(name, default)
+        if not (value.isdigit() and int(value) < num_classes):
+            raise ValueError(f"{name} must be an emotion index from 0 to {num_classes - 1}")
+        return int(value)
 
     if mode == "emotions":
         y = torch.eye(num_classes)
         z_count = 1
     elif mode == "morph":
-        a = min(max(int(params.get("from", 6)), 0), num_classes - 1)
-        b = min(max(int(params.get("to", 3)), 0), num_classes - 1)
+        a, b = emotion("from", "6"), emotion("to", "3")
         t = torch.linspace(0, 1, min(max(int(params.get("steps", 9)), 2), 24))
         y = torch.zeros(len(t), num_classes)
         y[:, a] += 1 - t
@@ -324,8 +334,10 @@ def generate(params):
         z_count = 1
     else:
         n = min(max(int(params.get("n", 8)), 1), 48)
-        label = params.get("label", "all")
-        labels = [int(label)] * n if label.isdigit() and int(label) < num_classes else [i % num_classes for i in range(n)]
+        if params.get("label", "all") == "all":
+            labels = [i % num_classes for i in range(n)]
+        else:
+            labels = [emotion("label", "all")] * n
         y = F.one_hot(torch.tensor(labels), num_classes).float()
         z_count = n
 
